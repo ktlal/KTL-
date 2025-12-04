@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>像素粒子变换</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            max-width: 300px;
+        }
+
+        h1 {
+            font-size: 16px;
+            margin-top: 0;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        input[type="file"] {
+            font-size: 12px;
+            color: #fff;
+            width: 100%;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #fff;
+            color: #000;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            font-family: inherit;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #ccc;
+        }
+
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        canvas {
+            display: block;
+            margin: auto;
+            max-width: 100%;
+            max-height: 100vh;
+            image-rendering: pixelated; /* 关键：保持像素边缘锋利 */
+        }
+        
+        .hint {
+            font-size: 10px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <h1>像素变形生成器</h1>
+        
+        <div class="input-group">
+            <label>1. 上传你的图片 (提供颜色)</label>
+            <input type="file" id="userImgInput" accept="image/*">
+        </div>
+
+        <div class="input-group">
+            <label>2. 上传素材图片 (提供形状)</label>
+            <input type="file" id="targetImgInput" accept="image/*">
+            <div class="hint">请上传那张黑白哭泣脸图片</div>
+        </div>
+
+        <div class="input-group">
+            <label>像素大小 (清晰度)</label>
+            <input type="range" id="gapRange" min="4" max="20" value="8">
+        </div>
+
+        <button id="startBtn" disabled>开始变换</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const userImgInput = document.getElementById('userImgInput');
+        const targetImgInput = document.getElementById('targetImgInput');
+        const startBtn = document.getElementById('startBtn');
+        const gapRange = document.getElementById('gapRange');
+
+        let userImage = null;
+        let targetImage = null;
+        let particles = [];
+        let animationId;
+        let gap = 8; // 像素间距
+
+        // 设置画布大小
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 监听输入
+        userImgInput.addEventListener('change', (e) => loadFile(e, 'user'));
+        targetImgInput.addEventListener('change', (e) => loadFile(e, 'target'));
+        gapRange.addEventListener('input', (e) => gap = parseInt(e.target.value));
+
+        function loadFile(e, type) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    if (type === 'user') {
+                        userImage = img;
+                        // 预览初始图片
+                        initParticlesFromUserImage();
+                    } else {
+                        targetImage = img;
+                    }
+                    checkReady();
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function checkReady() {
+            if (userImage && targetImage) {
+                startBtn.disabled = false;
+                startBtn.innerText = "开始变换";
+            }
+        }
+
+        // 粒子类
+        class Particle {
+            constructor(x, y, color) {
+                this.x = Math.random() * canvas.width; // 初始随机位置或屏幕外
+                this.y = Math.random() * canvas.height;
+                this.originX = x; // 用户图片的原始位置（如果想复原）
+                this.originY = y;
+                this.targetX = x; // 目标位置
+                this.targetY = y;
+                this.color = color;
+                this.size = gap - 1;
+                this.vx = 0;
+                this.vy = 0;
+                this.ease = 0.05 + Math.random() * 0.05; // 随机缓动系数
+            }
+
+            update() {
+                const dx = this.targetX - this.x;
+                const dy = this.targetY - this.y;
+                
+                this.x += dx * this.ease;
+                this.y += dy * this.ease;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(Math.floor(this.x), Math.floor(this.y), this.size, this.size);
+            }
+        }
+
+        // 从图片获取像素数据
+        function getImageData(img) {
+            // 创建一个临时的 canvas 来读取像素
+            const tmpCanvas = document.createElement('canvas');
+            const tmpCtx = tmpCanvas.getContext('2d');
+            
+            // 计算缩放比例，让图片适应屏幕，但保持低像素感
+            const scale = Math.min(canvas.width / img.width, canvas.height / img.height) * 0.8;
+            const w = Math.floor(img.width * scale);
+            const h = Math.floor(img.height * scale);
+            
+            // 居中
+            const offsetX = (canvas.width - w) / 2;
+            const offsetY = (canvas.height - h) / 2;
+
+            tmpCanvas.width = canvas.width;
+            tmpCanvas.height = canvas.height;
+            
+            tmpCtx.drawImage(img, offsetX, offsetY, w, h);
+            
+            return tmpCtx.getImageData(0, 0, canvas.width, canvas.height);
+        }
+
+        // 初始化用户图片的粒子
+        function initParticlesFromUserImage() {
+            if (!userImage) return;
+            particles = [];
+            
+            const imgData = getImageData(userImage);
+            const data = imgData.data;
+
+            for (let y = 0; y < canvas.height; y += gap) {
+                for (let x = 0; x < canvas.width; x += gap) {
+                    const index = (y * canvas.width + x) * 4;
+                    const r = data[index];
+                    const g = data[index + 1];
+                    const b = data[index + 2];
+                    const a = data[index + 3];
+
+                    if (a > 128) {
+                        const color = `rgb(${r},${g},${b})`;
+                        // 初始状态：粒子就在它们该在的位置（显示用户图）
+                        const p = new Particle(x, y, color);
+                        p.x = x; 
+                        p.y = y;
+                        particles.push(p);
+                    }
+                }
+            }
+            drawOnce();
+        }
+
+        // 计算目标位置
+        function morphToTarget() {
+            if (!targetImage || !userImage) return;
+
+            const targetData = getImageData(targetImage).data;
+            const validTargets = [];
+
+            // 1. 扫描素材图片，找到所有非透明/非白色像素的位置作为目标点
+            for (let y = 0; y < canvas.height; y += gap) {
+                for (let x = 0; x < canvas.width; x += gap) {
+                    const index = (y * canvas.width + x) * 4;
+                    const r = targetData[index];
+                    const g = targetData[index + 1];
+                    const b = targetData[index + 2];
+                    const a = targetData[index + 3]; // Alpha
+
+                    // 判断是否是有效像素 (素材图如果是黑白的，通常取黑色部分或者非白色部分)
+                    // 这里假设素材图背景是黑，内容是白；或者是透明底。
+                    // 针对你提供的图（黑底白线），我们取亮度较高的点。
+                    const brightness = (r + g + b) / 3;
+                    
+                    // 如果像素比较亮（对于你的素材图来说，线条是白色的）
+                    if (brightness > 50 && a > 0) {
+                        validTargets.push({ x, y });
+                    }
+                }
+            }
+
+            // 2. 将现有的粒子分配到目标位置
+            // 打乱目标位置，让变换看起来更随机自然
+            validTargets.sort(() => Math.random() - 0.5);
+
+            for (let i = 0; i < particles.length; i++) {
+                if (i < validTargets.length) {
+                    // 粒子有去处
+                    particles[i].targetX = validTargets[i].x;
+                    particles[i].targetY = validTargets[i].y;
+                } else {
+                    // 粒子多余了，让它们飞出屏幕或者聚集到中心
+                    // 这里选择隐藏（飞到屏幕外）
+                    particles[i].targetX = Math.random() * canvas.width;
+                    particles[i].targetY = canvas.height + 100;
+                }
+            }
+
+            // 3. 如果目标位置比粒子多，是否需要新增粒子？
+            // 题目要求“保持原色彩不变”，即只用用户图的颜色。
+            // 简单起见，我们只移动现有的粒子。如果粒子不够填满素材图，会显得稀疏，这符合“低像素”艺术感。
+            
+            animate();
+        }
+
+        function drawOnce() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            particles.forEach(p => p.draw());
+        }
+
+        function animate() {
+            ctx.fillStyle = 'rgba(17, 17, 17, 0.3)'; // 拖尾效果，如果不想要可以改成 clearRect
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            let moving = false;
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+                
+                // 简单检查是否还在动
+                if (Math.abs(p.targetX - p.x) > 0.5 || Math.abs(p.targetY - p.y) > 0.5) {
+                    moving = true;
+                }
+            });
+
+            if (moving) {
+                animationId = requestAnimationFrame(animate);
+            }
+        }
+
+        startBtn.addEventListener('click', () => {
+            if(animationId) cancelAnimationFrame(animationId);
+            morphToTarget();
+        });
+
+    </script>
+</body>
+</html>
