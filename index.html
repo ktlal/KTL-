@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Fluid Hand Interface // SILKY MODE</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050505;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #input_video { display: none; }
+
+        .container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); /* 镜像翻转 */
+        }
+
+        /* 简单的 UI 装饰 */
+        .ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(0, 255, 255, 0.6);
+            pointer-events: none;
+            z-index: 10;
+            font-size: 14px;
+            letter-spacing: 2px;
+        }
+        
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #0ff;
+            font-size: 20px;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div class="loading" id="loading">SYSTEM SYNCING...</div>
+    
+    <div class="container">
+        <div class="ui-overlay">
+            MODE: FLUID_TRACKING<br>
+            VISUALS: HIGH_GLOW
+        </div>
+        <video id="input_video"></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const ctx = canvasElement.getContext('2d');
+        const loadingMsg = document.getElementById('loading');
+
+        function resize() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        let particles = [];
+        // 定义指尖的索引（大拇指到小指）
+        const fingerTips = [4, 8, 12, 16, 20];
+
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                // 粒子更小，更轻盈
+                this.size = Math.random() * 3 + 1; 
+                this.speedX = Math.random() * 2 - 1; 
+                this.speedY = Math.random() * 2 - 1;
+                // 颜色偏向青色和白色
+                this.color = `rgba(0, 255, 255, ${Math.random() * 0.5 + 0.5})`;
+                this.life = 1.0;
+                this.decay = 0.03; // 消失得稍快
+            }
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.life -= this.decay;
+                this.size *= 0.9;
+            }
+            draw(ctx) {
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        function onResults(results) {
+            loadingMsg.style.display = 'none';
+
+            // --- 核心技巧：创建丝滑拖尾 ---
+            // 不使用 clearRect，而是覆盖一层带透明度的黑色
+            // 透明度越低 (0.05 - 0.1)，拖尾越长，看起来越丝滑
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.15)'; 
+            ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // 开启叠加模式，让重叠的光线更亮（发光效果）
+            ctx.globalCompositeOperation = 'lighter';
+
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    drawFluidHand(landmarks);
+                }
+            }
+
+            // 处理微粒子
+            handleParticles();
+
+            // 恢复默认混合模式，以免影响背景绘制
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        function drawFluidHand(landmarks) {
+            // 1. 设置发光样式
+            ctx.shadowBlur = 20; // 光晕半径
+            ctx.shadowColor = '#00ffff'; // 光晕颜色
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.8)';
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // 2. 绘制骨架连线 (利用 MediaPipe 提供的连接数据)
+            // 我们手动画线以控制风格
+            const connections = HAND_CONNECTIONS;
+            
+            ctx.beginPath();
+            for (const connection of connections) {
+                const p1 = landmarks[connection[0]];
+                const p2 = landmarks[connection[1]];
+                
+                const x1 = p1.x * canvasElement.width;
+                const y1 = p1.y * canvasElement.height;
+                const x2 = p2.x * canvasElement.width;
+                const y2 = p2.y * canvasElement.height;
+
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+            }
+            ctx.stroke();
+
+            // 3. 绘制所有关节节点
+            for (let i = 0; i < landmarks.length; i++) {
+                const x = landmarks[i].x * canvasElement.width;
+                const y = landmarks[i].y * canvasElement.height;
+
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                // 关节稍微画小一点
+                ctx.arc(x, y, 3, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 4. 仅在5个指尖生成少量粒子
+                if (fingerTips.includes(i)) {
+                    // 只有当手移动时才会有较明显的粒子，这里简单每帧生成一个
+                    if(Math.random() > 0.5) {
+                        particles.push(new Particle(x, y));
+                    }
+                }
+            }
+        }
+
+        function handleParticles() {
+            // 粒子不需要发光太强，稍微降低 shadowBlur
+            ctx.shadowBlur = 0; 
+            
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update();
+                particles[i].draw(ctx);
+                if (particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                    i--;
+                }
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        camera.start();
+    </script>
+</body>
+</html>
